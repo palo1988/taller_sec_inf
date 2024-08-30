@@ -1,154 +1,152 @@
-from cryptography.hazmat.primitives.asymmetric import rsa, padding
+import os
 from cryptography.hazmat.primitives import serialization, hashes
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.backends import default_backend
-from tkinter import filedialog, messagebox
-import tkinter as tk
-import os
-import secrets
-import base64
-import hashlib
+from tkinter import Tk, filedialog, Button, Label, Entry, StringVar, messagebox
 
-# Función para generar claves RSA
-def generate_keys():
-    passphrase = passphrase_entry.get().encode()  # Obtener la frase de la interfaz y codificarla a bytes
-
-    if not passphrase:
-        messagebox.showwarning("Advertencia", "Por favor, ingrese una frase antes de generar las claves.")
-        return
-
+def generate_keys(passphrase):
+    """Genera un par de claves RSA y las guarda en archivos cifrados con una frase de contraseña."""
     private_key = rsa.generate_private_key(
         public_exponent=65537,
-        key_size=2048
+        key_size=2048,
+        backend=default_backend()
     )
     public_key = private_key.public_key()
 
-    # Derivar una clave a partir de la frase para cifrar la clave privada
-    salt = os.urandom(16)
-    kdf = PBKDF2HMAC(
-        algorithm=hashes.SHA256(),
-        length=32,
-        salt=salt,
-        iterations=100000,
-        backend=default_backend()
-    )
-    key = base64.urlsafe_b64encode(kdf.derive(passphrase))
-
+    # Convertir la frase a bytes y cifrar la clave privada
+    passphrase_bytes = passphrase.encode()
+    
+    # Guardar la clave privada cifrada
     with open("private_key.pem", "wb") as f:
         f.write(private_key.private_bytes(
             encoding=serialization.Encoding.PEM,
-            format=serialization.PrivateFormat.TraditionalOpenSSL,
-            encryption_algorithm=serialization.BestAvailableEncryption(key)
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.BestAvailableEncryption(passphrase_bytes)
         ))
 
+    # Guardar la clave pública
     with open("public_key.pem", "wb") as f:
         f.write(public_key.public_bytes(
             encoding=serialization.Encoding.PEM,
             format=serialization.PublicFormat.SubjectPublicKeyInfo
         ))
 
-    messagebox.showinfo("Éxito", "Las claves se han generado y guardado exitosamente.")
+    print("Claves generadas con éxito.")
 
-# Función para cifrar un archivo con AES
-def encrypt_file():
-    public_key_path = filedialog.askopenfilename(title="Seleccionar clave pública")
-    file_path = filedialog.askopenfilename(title="Seleccionar archivo para cifrar")
+
+def encrypt_file(file_path, public_key_path):
+    """Cifra un archivo utilizando una clave pública RSA y AES."""
+    try:
+        with open(public_key_path, "rb") as key_file:
+            public_key = serialization.load_pem_public_key(key_file.read(), backend=default_backend())
+
+        with open(file_path, "rb") as f:
+            file_data = f.read()
+
+        aes_key = os.urandom(32)
+        iv = os.urandom(16)
+
+        cipher = Cipher(algorithms.AES(aes_key), modes.CFB(iv), backend=default_backend())
+        encryptor = cipher.encryptor()
+        encrypted_file_data = encryptor.update(file_data) + encryptor.finalize()
+
+        encrypted_key = public_key.encrypt(
+            aes_key,
+            padding.OAEP(
+                mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                algorithm=hashes.SHA256(),
+                label=None
+            )
+        )
+
+        encrypted_file_path = file_path + ".encrypted"
+        with open(encrypted_file_path, "wb") as f:
+            f.write(iv + encrypted_key + encrypted_file_data)
+
+        messagebox.showinfo("Éxito", f"Archivo cifrado guardado como '{encrypted_file_path}'.")
+
+    except Exception as e:
+        messagebox.showerror("Error", str(e))
+
+
+def decrypt_file(encrypted_file_path, private_key_path, passphrase):
+    """Descifra un archivo utilizando una clave privada RSA y AES."""
+    try:
+        with open(private_key_path, "rb") as key_file:
+            private_key = serialization.load_pem_private_key(
+                key_file.read(),
+                password=passphrase.encode(),
+                backend=default_backend()
+            )
+
+        with open(encrypted_file_path, "rb") as f:
+            iv = f.read(16)
+            encrypted_key = f.read(256)
+            encrypted_file_data = f.read()
+
+        aes_key = private_key.decrypt(
+            encrypted_key,
+            padding.OAEP(
+                mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                algorithm=hashes.SHA256(),
+                label=None
+            )
+        )
+
+        cipher = Cipher(algorithms.AES(aes_key), modes.CFB(iv), backend=default_backend())
+        decryptor = cipher.decryptor()
+        decrypted_file_data = decryptor.update(encrypted_file_data) + decryptor.finalize()
+
+        decrypted_file_path = encrypted_file_path.replace(".encrypted", ".decrypted")
+        with open(decrypted_file_path, "wb") as f:
+            f.write(decrypted_file_data)
+
+        messagebox.showinfo("Éxito", f"Archivo descifrado guardado como '{decrypted_file_path}'.")
+
+    except Exception as e:
+        messagebox.showerror("Error", str(e))
+
+
+def select_file_to_encrypt():
+    file_path = filedialog.askopenfilename()
+    if file_path:
+        encrypt_file(file_path, 'public_key.pem')
+
+
+def select_file_to_decrypt():
+    file_path = filedialog.askopenfilename()
+    if file_path:
+        passphrase = passphrase_entry.get()
+        decrypt_file(file_path, 'private_key.pem', passphrase)
+
+
+def create_gui():
+    root = Tk()
+    root.title("Cifrado y Descifrado RSA")
+
+    # Entrada para la frase de contraseña
+    global passphrase_entry
+    passphrase_label = Label(root, text="Frase de Contraseña:")
+    passphrase_label.pack(pady=5)
     
-    with open(public_key_path, "rb") as key_file:
-        public_key = serialization.load_pem_public_key(key_file.read())
+    passphrase_entry = Entry(root, show="*")
+    passphrase_entry.pack(pady=5)
 
-    with open(file_path, "rb") as f:
-        file_data = f.read()
+    # Botón para generar claves
+    generate_keys_button = Button(root, text="Generar Claves RSA", command=lambda: generate_keys(passphrase_entry.get()))
+    generate_keys_button.pack(pady=10)
 
-    # Generar clave AES aleatoria
-    aes_key = secrets.token_bytes(32)  # 256 bits
+    # Botón para cifrar
+    encrypt_button = Button(root, text="Seleccionar Archivo para Cifrar", command=select_file_to_encrypt)
+    encrypt_button.pack(pady=10)
 
-    # Cifrar el archivo con AES
-    iv = secrets.token_bytes(16)
-    cipher = Cipher(algorithms.AES(aes_key), modes.CFB(iv), backend=default_backend())
-    encryptor = cipher.encryptor()
-    encrypted_file_data = encryptor.update(file_data) + encryptor.finalize()
+    # Botón para descifrar
+    decrypt_button = Button(root, text="Seleccionar Archivo para Descifrar", command=select_file_to_decrypt)
+    decrypt_button.pack(pady=10)
 
-    # Cifrar la clave AES con RSA
-    encrypted_key = public_key.encrypt(
-        aes_key,
-        padding.OAEP(
-            mgf=padding.MGF1(algorithm=hashes.SHA256()),
-            algorithm=hashes.SHA256(),
-            label=None
-        )
-    )
+    root.mainloop()
 
-    # Guardar el archivo cifrado
-    encrypted_file_path = file_path + ".encrypted"
-    with open(encrypted_file_path, "wb") as f:
-        # Guardar la IV, clave AES cifrada y el contenido cifrado
-        f.write(iv + encrypted_key + encrypted_file_data)
 
-    messagebox.showinfo("Éxito", f"El archivo ha sido cifrado y guardado como '{encrypted_file_path}'.")
-
-# Función para descifrar un archivo
-def decrypt_file():
-    private_key_path = filedialog.askopenfilename(title="Seleccionar clave privada")
-    encrypted_file_path = filedialog.askopenfilename(title="Seleccionar archivo cifrado")
-    
-    with open(private_key_path, "rb") as key_file:
-        private_key = serialization.load_pem_private_key(
-            key_file.read(),
-            password=None
-        )
-
-    with open(encrypted_file_path, "rb") as f:
-        iv = f.read(16)
-        encrypted_key = f.read(256)  # RSA 2048-bit output size
-        encrypted_file_data = f.read()
-
-    # Descifrar la clave AES con la clave privada RSA
-    aes_key = private_key.decrypt(
-        encrypted_key,
-        padding.OAEP(
-            mgf=padding.MGF1(algorithm=hashes.SHA256()),
-            algorithm=hashes.SHA256(),
-            label=None
-        )
-    )
-
-    # Descifrar el archivo con AES
-    cipher = Cipher(algorithms.AES(aes_key), modes.CFB(iv), backend=default_backend())
-    decryptor = cipher.decryptor()
-    decrypted_file_data = decryptor.update(encrypted_file_data) + decryptor.finalize()
-
-    # Guardar el archivo descifrado
-    decrypted_file_path = encrypted_file_path.replace(".encrypted", ".decrypted")
-    with open(decrypted_file_path, "wb") as f:
-        f.write(decrypted_file_data)
-
-    messagebox.showinfo("Éxito", f"El archivo ha sido descifrado y guardado como '{decrypted_file_path}'.")
-
-# Configuración de la interfaz gráfica
-app = tk.Tk()
-app.title("Cifrado Asimétrico RSA - Archivos")
-
-frame = tk.Frame(app)
-frame.pack(padx=10, pady=10)
-
-# Etiqueta y campo de entrada para la frase
-passphrase_label = tk.Label(frame, text="Ingrese una frase:")
-passphrase_label.grid(row=0, column=0, padx=5, pady=5)
-passphrase_entry = tk.Entry(frame, show="*")
-passphrase_entry.grid(row=0, column=1, padx=5, pady=5)
-
-# Botón para generar claves
-generate_button = tk.Button(frame, text="Generar Claves RSA", command=generate_keys)
-generate_button.grid(row=1, column=0, columnspan=2, pady=10)
-
-# Botón para cifrar un archivo
-encrypt_button = tk.Button(frame, text="Cifrar Archivo", command=encrypt_file)
-encrypt_button.grid(row=2, column=0, pady=10)
-
-# Botón para descifrar un archivo
-decrypt_button = tk.Button(frame, text="Descifrar Archivo", command=decrypt_file)
-decrypt_button.grid(row=2, column=1, pady=10)
-
-app.mainloop()
+if __name__ == "__main__":
+    create_gui()
